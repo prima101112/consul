@@ -13,6 +13,7 @@ import (
 
 func (a *Agent) retryJoinLAN() {
 	r := &retryJoiner{
+		variant:     retryJoinSerfVariant,
 		cluster:     "LAN",
 		addrs:       a.config.RetryJoinLAN,
 		maxAttempts: a.config.RetryJoinMaxAttemptsLAN,
@@ -26,13 +27,71 @@ func (a *Agent) retryJoinLAN() {
 }
 
 func (a *Agent) retryJoinWAN() {
+	if !a.config.ServerMode {
+		a.logger.Printf("[WARN] agent: (WAN) couldn't join: Err: Must be a server to join WAN cluster")
+		return
+	}
+
+	isPrimary := a.config.PrimaryDatacenter == a.config.Datacenter
+
+	var joinAddrs []string
+	if a.config.ConnectMeshGatewayWANFederationEnabled {
+		// When wanfed is activated each datacenter 100% relies upon flood-join
+		// to replicate the LAN members in a dc into the WAN pool. We
+		// completely hijack whatever the user configured to correctly
+		// implement the star-join.
+		//
+		// Elsewhere we enforce that start-join-wan and retry-join-wan cannot
+		// be set if wanfed is enabled so we don't have to emit any warnings
+		// related to that here.
+
+		if isPrimary {
+			// Wanfed requires that secondaries join TO the primary and the
+			// primary doesn't explicitly join down to the secondaries, so as
+			// such in the primary a retry-join operation is a no-op.
+			return
+		}
+
+		// First get a handle on dialing the primary
+		a.refreshPrimaryGatewayFallbackAddresses()
+
+		// Then "retry join" a special address via the gateway which is
+		// load balanced to all servers in the primary datacenter
+		//
+		// Since this address is merely a placeholder we use an address from the
+		// TEST-NET-1 block as described in https://tools.ietf.org/html/rfc5735#section-3
+		const placeholderIPAddress = "192.0.2.2"
+		joinAddrs = []string{
+			fmt.Sprintf("*.%s/%s", a.config.PrimaryDatacenter, placeholderIPAddress),
+		}
+	} else {
+		joinAddrs = a.config.RetryJoinWAN
+	}
+
 	r := &retryJoiner{
+		variant:     retryJoinSerfVariant,
 		cluster:     "WAN",
-		addrs:       a.config.RetryJoinWAN,
+		addrs:       joinAddrs,
 		maxAttempts: a.config.RetryJoinMaxAttemptsWAN,
 		interval:    a.config.RetryJoinIntervalWAN,
 		join:        a.JoinWAN,
 		logger:      a.logger,
+	}
+	if err := r.retryJoin(); err != nil {
+		a.retryJoinCh <- err
+	}
+}
+
+func (a *Agent) refreshPrimaryGatewayFallbackAddresses() {
+	r := &retryJoiner{
+		variant:     retryJoinMeshGatewayVariant,
+		cluster:     "primary",
+		addrs:       a.config.PrimaryGateways,
+		maxAttempts: 0,
+		interval:    a.config.PrimaryGatewaysInterval,
+		join:        a.RefreshPrimaryGatewayFallbackAddresses,
+		logger:      a.logger,
+		stopCh:      a.PrimaryMeshGatewayAddressesReadyCh(),
 	}
 	if err := r.retryJoin(); err != nil {
 		a.retryJoinCh <- err
@@ -52,7 +111,7 @@ func newDiscover() (*discover.Discover, error) {
 	)
 }
 
-func retryJoinAddrs(disco *discover.Discover, cluster string, retryJoin []string, logger *log.Logger) []string {
+func retryJoinAddrs(disco *discover.Discover, variant, cluster string, retryJoin []string, logger *log.Logger) []string {
 	addrs := []string{}
 	if disco == nil {
 		return addrs
@@ -68,7 +127,11 @@ func retryJoinAddrs(disco *discover.Discover, cluster string, retryJoin []string
 			} else {
 				addrs = append(addrs, servers...)
 				if logger != nil {
-					logger.Printf("[INFO] agent: Discovered %s servers: %s", cluster, strings.Join(servers, " "))
+					if variant == retryJoinMeshGatewayVariant {
+						logger.Printf("[INFO] agent: Discovered %q mesh gateways: %s", cluster, strings.Join(servers, " "))
+					} else {
+						logger.Printf("[INFO] agent: Discovered %s servers: %s", cluster, strings.Join(servers, " "))
+					}
 				}
 			}
 
@@ -80,9 +143,18 @@ func retryJoinAddrs(disco *discover.Discover, cluster string, retryJoin []string
 	return addrs
 }
 
+const (
+	retryJoinSerfVariant        = "serf"
+	retryJoinMeshGatewayVariant = "mesh-gateway"
+)
+
 // retryJoiner is used to handle retrying a join until it succeeds or all
 // retries are exhausted.
 type retryJoiner struct {
+	// variant is either "serf" or "mesh-gateway" and just adjusts the log messaging
+	// emitted
+	variant string
+
 	// cluster is the name of the serf cluster, e.g. "LAN" or "WAN".
 	cluster string
 
@@ -100,6 +172,9 @@ type retryJoiner struct {
 	// serf cluster.
 	join func([]string) (int, error)
 
+	// stopCh is an optional stop channel to exit the retry loop early
+	stopCh <-chan struct{}
+
 	// logger is the agent logger. Log messages should contain the
 	// "agent: " prefix.
 	logger *log.Logger
@@ -115,27 +190,55 @@ func (r *retryJoiner) retryJoin() error {
 		return err
 	}
 
-	r.logger.Printf("[INFO] agent: Retry join %s is supported for: %s", r.cluster, strings.Join(disco.Names(), " "))
-	r.logger.Printf("[INFO] agent: Joining %s cluster...", r.cluster)
+	if r.variant == retryJoinMeshGatewayVariant {
+		r.logger.Printf("[INFO] agent: Refresh mesh gateways for %s is supported for: %s", r.cluster, strings.Join(disco.Names(), " "))
+		r.logger.Printf("[INFO] agent: Refreshing %s mesh gateways...", r.cluster)
+	} else {
+		r.logger.Printf("[INFO] agent: Retry join %s is supported for: %s", r.cluster, strings.Join(disco.Names(), " "))
+		r.logger.Printf("[INFO] agent: Joining %s cluster...", r.cluster)
+	}
+
 	attempt := 0
 	for {
-		addrs := retryJoinAddrs(disco, r.cluster, r.addrs, r.logger)
+		addrs := retryJoinAddrs(disco, r.variant, r.cluster, r.addrs, r.logger)
 		if len(addrs) > 0 {
 			n, err := r.join(addrs)
 			if err == nil {
-				r.logger.Printf("[INFO] agent: Join %s completed. Synced with %d initial agents", r.cluster, n)
+				if r.variant == retryJoinMeshGatewayVariant {
+					r.logger.Printf("[INFO] agent: Refreshing %s mesh gateways completed.", r.cluster)
+				} else {
+					r.logger.Printf("[INFO] agent: Join %s completed. Synced with %d initial agents", r.cluster, n)
+				}
 				return nil
 			}
 		} else if len(addrs) == 0 {
-			err = fmt.Errorf("No servers to join")
+			if r.variant == retryJoinMeshGatewayVariant {
+				err = fmt.Errorf("No mesh gateways found")
+			} else {
+				err = fmt.Errorf("No servers to join")
+			}
 		}
 
 		attempt++
 		if r.maxAttempts > 0 && attempt > r.maxAttempts {
-			return fmt.Errorf("agent: max join %s retry exhausted, exiting", r.cluster)
+			if r.variant == retryJoinMeshGatewayVariant {
+				return fmt.Errorf("agent: max refresh of %s mesh gateways retry exhausted, exiting", r.cluster)
+			} else {
+				return fmt.Errorf("agent: max join %s retry exhausted, exiting", r.cluster)
+			}
 		}
 
-		r.logger.Printf("[WARN] agent: Join %s failed: %v, retrying in %v", r.cluster, err, r.interval)
-		time.Sleep(r.interval)
+		if r.variant == retryJoinMeshGatewayVariant {
+			r.logger.Printf("[WARN] agent: Refresh of %s mesh gateways failed: %v, retrying in %v", r.cluster, err, r.interval)
+		} else {
+			r.logger.Printf("[WARN] agent: Join %s failed: %v, retrying in %v", r.cluster, err, r.interval)
+		}
+
+		select {
+		case <-time.After(r.interval):
+		case <-r.stopCh:
+			r.logger.Printf("[DEBUG] agent: loop variant=%q cluster=%q terminated early", r.variant, r.cluster)
+			return nil
+		}
 	}
 }

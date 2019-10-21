@@ -68,7 +68,7 @@ func (m *LeaderRoutineManager) StartWithContext(parentCtx context.Context, name 
 	go func() {
 		err := routine(ctx)
 		if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
-			m.logger.Printf("[ERROR] leader: %s routine exited with error: %v", name, err)
+			m.logger.Printf("[ERR] leader: %s routine exited with error: %v", name, err)
 		} else {
 			m.logger.Printf("[DEBUG] leader: stopped %s routine", name)
 		}
@@ -99,6 +99,7 @@ func (m *LeaderRoutineManager) Stop(name string) error {
 
 	m.logger.Printf("[DEBUG] leader: stopping %s routine", name)
 	instance.cancel()
+
 	delete(m.routines, name)
 	return nil
 }
@@ -115,6 +116,6 @@ func (m *LeaderRoutineManager) StopAll() {
 		routine.cancel()
 	}
 
-	// just whipe out the entire map
+	// just wipe out the entire map
 	m.routines = make(map[string]*leaderRoutine)
 }

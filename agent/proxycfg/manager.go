@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/consul/agent/cache"
 	"github.com/hashicorp/consul/agent/local"
 	"github.com/hashicorp/consul/agent/structs"
+	"github.com/hashicorp/consul/tlsutil"
 )
 
 var (
@@ -65,7 +66,8 @@ type ManagerConfig struct {
 	// for now and cleaner than passing the entire RuntimeConfig.
 	Source *structs.QuerySource
 	// logger is the agent's logger to be used for logging logs.
-	Logger *log.Logger
+	Logger          *log.Logger
+	TLSConfigurator *tlsutil.Configurator
 }
 
 // NewManager constructs a manager from the provided agent cache.
@@ -185,6 +187,9 @@ func (m *Manager) ensureProxyServiceLocked(ns *structs.NodeService, token string
 	state.logger = m.Logger
 	state.cache = m.Cache
 	state.source = m.Source
+	if m.TLSConfigurator != nil {
+		state.serverSNIFn = m.TLSConfigurator.ServerSNI
+	}
 
 	ch, err := state.Watch()
 	if err != nil {

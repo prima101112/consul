@@ -328,6 +328,10 @@ func (s *Server) establishLeadership() error {
 
 	s.startConfigReplication()
 
+	s.startFederationStateReplication()
+
+	s.startFederationStateAntiEntropy()
+
 	s.startConnectLeader()
 
 	s.setConsistentReadReady()
@@ -345,6 +349,10 @@ func (s *Server) revokeLeadership() {
 	s.clearAllSessionTimers()
 
 	s.revokeEnterpriseLeadership()
+
+	s.stopFederationStateAntiEntropy()
+
+	s.stopFederationStateReplication()
 
 	s.stopConfigReplication()
 
@@ -909,6 +917,20 @@ func (s *Server) startConfigReplication() {
 func (s *Server) stopConfigReplication() {
 	// will be a no-op when not started
 	s.leaderRoutineManager.Stop(configReplicationRoutineName)
+}
+
+func (s *Server) startFederationStateReplication() {
+	if s.config.PrimaryDatacenter == "" || s.config.PrimaryDatacenter == s.config.Datacenter {
+		// replication shouldn't run in the primary DC
+		return
+	}
+
+	s.leaderRoutineManager.Start(federationStateReplicationRoutineName, s.federationStateReplicator.Run)
+}
+
+func (s *Server) stopFederationStateReplication() {
+	// will be a no-op when not started
+	s.leaderRoutineManager.Stop(federationStateReplicationRoutineName)
 }
 
 // getOrCreateAutopilotConfig is used to get the autopilot config, initializing it if necessary

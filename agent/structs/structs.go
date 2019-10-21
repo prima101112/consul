@@ -67,6 +67,7 @@ const (
 	ACLAuthMethodSetRequestType                 = 27
 	ACLAuthMethodDeleteRequestType              = 28
 	ChunkingStateType                           = 29
+	FederationStateRequestType                  = 30
 )
 
 const (
@@ -97,6 +98,10 @@ const (
 
 	// MetaSegmentKey is the node metadata key used to store the node's network segment
 	MetaSegmentKey = "consul-network-segment"
+
+	// MetaWANFederationKey is the mesh gateway metadata key that indicates a
+	// mesh gateway is usable for wan federation.
+	MetaWANFederationKey = "wan-federation"
 
 	// MaxLockDelay provides a maximum LockDelay value for
 	// a session. Any value above this will not be respected.
