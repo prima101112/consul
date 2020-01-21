@@ -1,3 +1,8 @@
+{{#if item.ID }}
+    {{title 'Edit Policy'}}
+{{else}}
+    {{title 'New Policy'}}
+{{/if}}
 {{#app-view class=(concat 'policy ' (if (or isAuthorized isEnabled) 'edit' 'list')) loading=isLoading authorized=isAuthorized enabled=isEnabled}}
     {{#block-slot name='notification' as |status type|}}
       {{partial 'dc/acls/policies/notifications'}}

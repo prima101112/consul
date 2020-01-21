@@ -1,3 +1,8 @@
+{{#if item.Key}}
+  {{title 'Edit Key/Value'}}
+{{else}}
+  {{title 'New Key/Value'}}
+{{/if}}
 {{#app-view class="kv edit" loading=isLoading}}
   {{#block-slot name='notification' as |status type|}}
     {{partial 'dc/kv/notifications'}}

@@ -1,3 +1,4 @@
+{{title 'Access Controls'}}
 {{#app-view class=(concat 'policy ' (if (not isAuthorized) 'edit' 'list')) loading=isLoading authorized=isAuthorized enabled=isEnabled}}
   {{#block-slot name='notification' as |status type|}}
     {{partial 'dc/acls/policies/notifications'}}
