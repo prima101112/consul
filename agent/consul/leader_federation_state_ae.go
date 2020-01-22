@@ -61,9 +61,8 @@ func (s *Server) federationStateAntiEntropyMaybeSync(ctx context.Context, lastFe
 	queryOpts := &structs.QueryOptions{
 		MinQueryIndex:     lastFetchIndex,
 		RequireConsistent: true,
-		Token:             s.tokens.ReplicationToken(),
+		// This is just for a local blocking query so no token is needed.
 	}
-
 	idx, prev, curr, err := s.fetchFederationStateAntiEntropyDetails(queryOpts)
 	if err != nil {
 		return 0, err
@@ -81,23 +80,47 @@ func (s *Server) federationStateAntiEntropyMaybeSync(ctx context.Context, lastFe
 		return idx, nil
 	}
 
-	curr.UpdatedAt = time.Now().UTC()
-
-	args := structs.FederationStateRequest{
-		Op:    structs.FederationStateUpsert,
-		State: curr,
-		WriteRequest: structs.WriteRequest{
-			Token: s.tokens.ReplicationToken(),
-		},
-	}
-	ignored := false
-	if err := s.forwardDC("FederationState.Apply", s.config.PrimaryDatacenter, &args, &ignored); err != nil {
+	if err := s.updateOurFederationState(curr); err != nil {
 		return 0, fmt.Errorf("error performing federation state anti-entropy sync: %v", err)
 	}
 
 	s.logger.Printf("[INFO] leader: federation state anti-entropy synced")
 
 	return idx, nil
+}
+
+func (s *Server) updateOurFederationState(curr *structs.FederationState) error {
+	if curr.Datacenter != s.config.Datacenter { // sanity check
+		return fmt.Errorf("cannot use this mechanism to update federation states for other datacenters")
+	}
+
+	curr.UpdatedAt = time.Now().UTC()
+
+	args := structs.FederationStateRequest{
+		Op:    structs.FederationStateUpsert,
+		State: curr,
+	}
+
+	if s.config.Datacenter == s.config.PrimaryDatacenter {
+		// We are the primary, so we can't do an RPC as we don't have a replication token.
+		resp, err := s.raftApply(structs.FederationStateRequestType, args)
+		if err != nil {
+			return err
+		}
+		if respErr, ok := resp.(error); ok {
+			return respErr
+		}
+	} else {
+		args.WriteRequest = structs.WriteRequest{
+			Token: s.tokens.ReplicationToken(),
+		}
+		ignored := false
+		if err := s.forwardDC("FederationState.Apply", s.config.PrimaryDatacenter, &args, &ignored); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *Server) fetchFederationStateAntiEntropyDetails(
