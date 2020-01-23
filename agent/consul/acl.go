@@ -1658,6 +1658,15 @@ func (r *ACLResolver) filterACLWithAuthorizer(authorizer acl.Authorizer, subj in
 	case *structs.CheckServiceNodes:
 		filt.filterCheckServiceNodes(v)
 
+	case *structs.DatacenterIndexedCheckServiceNodes:
+		if v == nil {
+			return nil
+		}
+		for dc, nodes := range v.DatacenterNodes {
+			filt.filterCheckServiceNodes(&nodes)
+			v.DatacenterNodes[dc] = nodes
+		}
+
 	case *structs.IndexedCheckServiceNodes:
 		filt.filterCheckServiceNodes(&v.Nodes)
 

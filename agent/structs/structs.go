@@ -1677,6 +1677,11 @@ type IndexedCheckServiceNodes struct {
 	QueryMeta
 }
 
+type DatacenterIndexedCheckServiceNodes struct {
+	DatacenterNodes map[string]CheckServiceNodes
+	QueryMeta
+}
+
 type IndexedNodeDump struct {
 	Dump NodeDump
 	QueryMeta

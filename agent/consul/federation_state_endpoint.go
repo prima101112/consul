@@ -104,6 +104,8 @@ func (c *FederationState) Get(args *structs.FederationStateQuery, reply *structs
 		})
 }
 
+// List is the endpoint meant to be used by consul servers performing
+// replication.
 func (c *FederationState) List(args *structs.DCSpecificRequest, reply *structs.IndexedFederationStates) error {
 	if done, err := c.srv.forward("FederationState.List", args, args, reply); done {
 		return err
@@ -134,6 +136,39 @@ func (c *FederationState) List(args *structs.DCSpecificRequest, reply *structs.I
 
 			reply.Index = index
 			reply.States = fedStates
+
+			return nil
+		})
+}
+
+// ListMeshGateways is the endpoint meant to be used by proxies only interested
+// in the discovery info for dialing mesh gateways. Analogous to catalog
+// endpoints.
+func (c *FederationState) ListMeshGateways(args *structs.DCSpecificRequest, reply *structs.DatacenterIndexedCheckServiceNodes) error {
+	if done, err := c.srv.forward("FederationState.ListMeshGateways", args, args, reply); done {
+		return err
+	}
+	defer metrics.MeasureSince([]string{"federation_state", "list_mesh_gateways"}, time.Now())
+
+	return c.srv.blockingQuery(
+		&args.QueryOptions,
+		&reply.QueryMeta,
+		func(ws memdb.WatchSet, state *state.Store) error {
+			index, fedStates, err := state.FederationStateList(ws)
+			if err != nil {
+				return err
+			}
+
+			dump := make(map[string]structs.CheckServiceNodes)
+
+			for _, fedState := range fedStates {
+				dump[fedState.Datacenter] = fedState.MeshGateways
+			}
+
+			reply.Index, reply.DatacenterNodes = index, dump
+			if err := c.srv.filterACL(args.Token, reply); err != nil {
+				return err
+			}
 
 			return nil
 		})
